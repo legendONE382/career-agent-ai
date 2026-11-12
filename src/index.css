@@ -1,0 +1,215 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-paper: #f4f1ea;
+  --color-paper-2: #ebe6d9;
+  --color-paper-3: #ddd6c4;
+  --color-ink: #0f1115;
+  --color-ink-2: #181b22;
+  --color-ink-3: #262a33;
+  --color-lime: #c8f560;
+  --color-lime-deep: #8fbf1c;
+  --color-coral: #ff6b4a;
+  --color-cobalt: #3b4bff;
+  --color-mint: #19a974;
+  --color-amber: #f5a524;
+
+  --animate-fade-up: fade-up 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-fade-in: fade-in 0.4s ease both;
+  --animate-pulse-ring: pulse-ring 2.2s ease-out infinite;
+  --animate-float: float 6s ease-in-out infinite;
+  --animate-shimmer: shimmer 1.8s linear infinite;
+
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes pulse-ring {
+    0% {
+      transform: scale(0.8);
+      opacity: 0.55;
+    }
+    100% {
+      transform: scale(1.7);
+      opacity: 0;
+    }
+  }
+  @keyframes float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-8px);
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: -200% 0;
+    }
+    to {
+      background-position: 200% 0;
+    }
+  }
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  overflow-x: clip;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+::selection {
+  background: var(--color-lime);
+  color: var(--color-ink);
+}
+
+/* Scrollbars in the app's own palette */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 17, 21, 0.32) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(15, 17, 21, 0.28);
+  border-radius: 8px;
+  border: 2px solid var(--color-paper);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 17, 21, 0.45);
+}
+
+textarea,
+input {
+  font-family: inherit;
+}
+
+/* Subtle paper grain + grid used on hero and dark rooms */
+.bg-dots {
+  background-image: radial-gradient(rgba(15, 17, 21, 0.14) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+.bg-grid-dark {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, rgba(15, 17, 21, 0.06) 25%, rgba(15, 17, 21, 0.12) 50%, rgba(15, 17, 21, 0.06) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.8s linear infinite;
+}
+
+/* Rendered resume (preview + exported HTML share the same look) */
+.resume-doc {
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: #14161b;
+}
+.resume-doc h1 {
+  font-family: "Bricolage Grotesque", "Inter", sans-serif;
+  font-size: 28px;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+}
+.resume-doc h2 {
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 700;
+  margin: 20px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1.5px solid #14161b;
+}
+.resume-doc h3 {
+  font-size: 14px;
+  font-weight: 650;
+  margin: 12px 0 2px;
+}
+.resume-doc p {
+  margin: 0 0 6px;
+}
+.resume-doc ul {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  list-style: disc;
+}
+.resume-doc ol {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+  list-style: decimal;
+}
+.resume-doc li {
+  margin: 2px 0;
+}
+.resume-doc a {
+  color: #2b3bd6;
+  text-decoration: underline;
+}
+.resume-doc hr {
+  border: 0;
+  border-top: 1px solid #cfcab9;
+  margin: 12px 0;
+}
+.resume-doc em {
+  color: #4b4f5a;
+}
+.resume-doc code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  background: #efece3;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+input[type="range"] {
+  accent-color: var(--color-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
