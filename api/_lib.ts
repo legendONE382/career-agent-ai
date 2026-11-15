@@ -27,7 +27,12 @@ export function originAllowed(req: Req): boolean {
 function clientIp(req: Req): string {
   const xf = req.headers["x-forwarded-for"];
   const first = Array.isArray(xf) ? xf[0] : xf?.split(",")[0];
-  return (first || req.socket.remoteAddress || "unknown").trim();
+  if (first) return first.trim();
+  try {
+    return (req.socket.remoteAddress || "unknown").trim();
+  } catch {
+    return "unknown";
+  }
 }
 
 /* Best-effort per-instance rate limit (serverless instances are ephemeral, but this

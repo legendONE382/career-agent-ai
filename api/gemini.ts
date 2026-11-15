@@ -46,6 +46,15 @@ function validatePayload(body: Record<string, unknown>): string | null {
 }
 
 export default async function handler(req: Req, res: ServerResponse) {
+  try {
+    return await handleRequest(req, res);
+  } catch (err) {
+    console.error("[careeragent] unexpected error:", err);
+    return send(res, 500, { error: "Unexpected server error. Please try again." });
+  }
+}
+
+async function handleRequest(req: Req, res: ServerResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return send(res, 405, { error: "Method not allowed." });
