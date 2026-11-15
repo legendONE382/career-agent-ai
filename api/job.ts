@@ -59,7 +59,7 @@ async function readJson(req: Req): Promise<Record<string, unknown> | null> {
   }
 }
 
-function isPrivateIPv4(ip: string): boolean {
+export function isPrivateIPv4(ip: string): boolean {
   const [a, b] = ip.split(".").map(Number);
   return (
     a === 0 ||
@@ -74,7 +74,7 @@ function isPrivateIPv4(ip: string): boolean {
 }
 
 /** Expands any textual IPv6 address into its 8 16-bit groups (null if malformed). */
-function parseIPv6(input: string): number[] | null {
+export function parseIPv6(input: string): number[] | null {
   let s = input.toLowerCase();
   const zone = s.indexOf("%");
   if (zone >= 0) s = s.slice(0, zone);
@@ -101,7 +101,7 @@ function parseIPv6(input: string): number[] | null {
   return nums.some((n) => Number.isNaN(n)) ? null : nums;
 }
 
-function isPrivateIp(ip: string): boolean {
+export function isPrivateIp(ip: string): boolean {
   const family = isIP(ip);
   if (family === 4) return isPrivateIPv4(ip);
   if (family !== 6) return true;
@@ -123,7 +123,7 @@ function isPrivateIp(ip: string): boolean {
   return false;
 }
 
-async function assertPublicUrl(raw: string): Promise<URL> {
+export async function assertPublicUrl(raw: string): Promise<URL> {
   let u: URL;
   try {
     u = new URL(raw);
@@ -228,7 +228,7 @@ function decodeEntities(s: string): string {
   });
 }
 
-function htmlToText(html: string): string {
+export function htmlToText(html: string): string {
   let s = html;
   s = s.replace(/<(script|style|noscript|svg|template|iframe)[\s\S]*?<\/\1>/gi, " ");
   s = s.replace(/<!--[\s\S]*?-->/g, " ");

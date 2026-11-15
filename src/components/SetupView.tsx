@@ -2,6 +2,7 @@ import { useRef, useState, type DragEvent } from "react";
 import type { SessionRecord } from "../types";
 import type { BackendInfo } from "../lib/gemini";
 import { errorMessage, extractResumeFromPdf, importJob } from "../lib/gemini";
+import mammoth from "mammoth";
 import { SAMPLE_JOB, SAMPLE_RESUME } from "../lib/demo";
 import { tierFor, scoreColor } from "../lib/scoring";
 import { formatDate } from "../lib/utils";
@@ -34,6 +35,47 @@ interface Props {
 const MIN_JOB = 60;
 const MIN_RESUME = 100;
 
+const MAX_PDF_BYTES = 2.5 * 1024 * 1024;
+const MAX_DOCX_BYTES = 8 * 1024 * 1024;
+const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+
+function fileExt(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i < 0 ? "" : name.slice(i).toLowerCase();
+}
+
+async function extractTextFromFile(file: File): Promise<string> {
+  const ext = fileExt(file.name);
+
+  // MIME sanity check: never treat an image/video/audio as a document.
+  const declared = (file.type || "").toLowerCase();
+  if (declared && /^(image|video|audio)\//.test(declared)) {
+    throw new Error("That looks like an image, video or audio file, not a resume. Upload a PDF, .docx or .txt/.md file instead.");
+  }
+
+  if (ext === ".pdf") {
+    if (file.size > MAX_PDF_BYTES) throw new Error("That PDF is over 2.5 MB. Try a smaller file or paste the text.");
+    return extractResumeFromPdf(file);
+  }
+
+  if (ext === ".docx") {
+    if (file.size > MAX_DOCX_BYTES) throw new Error("That Word document is over 8 MB. Try a smaller file or paste the text.");
+    const buf = await file.arrayBuffer();
+    const result = await mammoth.extractRawText({ arrayBuffer: buf });
+    if (result.messages && result.messages.length) {
+      // Non-fatal conversion warnings (unknown styles, etc.) — text is still usable.
+    }
+    return result.value || "";
+  }
+
+  if (/\.(txt|md|markdown|text)$/.test(ext)) {
+    if (file.size > MAX_TEXT_BYTES) throw new Error("That file is too large to be a resume.");
+    return file.text();
+  }
+
+  throw new Error("Unsupported file type. Upload a PDF, .docx (Word) or .txt/.md file, or paste your resume below.");
+}
+
 export function SetupView(p: Props) {
   const [url, setUrl] = useState("");
   const [importing, setImporting] = useState(false);
@@ -65,21 +107,13 @@ export function SetupView(p: Props) {
   async function handleFile(file: File | undefined | null) {
     if (!file) return;
     setFileError(null);
-    const name = file.name.toLowerCase();
     setReading(true);
     try {
-      let text = "";
-      if (file.type === "application/pdf" || name.endsWith(".pdf")) {
-        if (file.size > 2.5 * 1024 * 1024) throw new Error("That PDF is over 2.5 MB. Try a smaller file or paste the text.");
-        text = await extractResumeFromPdf(file);
-      } else if (/\.(txt|md|markdown|text)$/.test(name) || file.type.startsWith("text/")) {
-        if (file.size > 1024 * 1024) throw new Error("That file is too large to be a resume.");
-        text = await file.text();
-      } else if (/\.(docx?|pages|odt|rtf)$/.test(name)) {
-        throw new Error("Word/Pages files aren't supported yet. Export as PDF, or paste the text below.");
-      } else {
-        throw new Error("Unsupported file type. Upload a PDF or .txt/.md file, or paste your resume below.");
+      const ext = fileExt(file.name);
+      if (!/^\.(pdf|docx|txt|md|markdown|text)$/.test(ext)) {
+        throw new Error("Unsupported file type. Upload a PDF, .docx (Word) or .txt/.md file, or paste your resume below.");
       }
+      const text = await extractTextFromFile(file);
       if (text.trim().length < 30) throw new Error("Couldn't find readable text in that file. Paste your resume text instead.");
       p.onResume(text.trim());
       setFileName(file.name);
@@ -317,7 +351,7 @@ export function SetupView(p: Props) {
               <span className="grid size-10 place-items-center rounded-xl bg-ink/5">{reading ? <Spinner /> : <Icon name="upload" className="size-5" />}</span>
               <div className="min-w-0 flex-1 text-sm">
                 <p className="truncate font-semibold">{reading ? "Reading your file…" : fileName ? fileName : "Drop a PDF, .txt or .md file"}</p>
-                <p className="text-xs text-ink/50">PDFs are read by Gemini · max 2.5 MB</p>
+                <p className="text-xs text-ink/50">PDFs and Word docs are read by AI · text files are read directly · max 2.5 MB PDF / 8 MB Word</p>
               </div>
               <Button variant="secondary" size="sm" onClick={() => fileRef.current?.click()} disabled={reading}>
                 Browse
@@ -325,7 +359,7 @@ export function SetupView(p: Props) {
               <input
                 ref={fileRef}
                 type="file"
-                accept=".pdf,.txt,.md,.markdown,text/plain,application/pdf"
+                accept=".pdf,.docx,.txt,.md,.markdown,text/plain,application/pdf"
                 className="hidden"
                 onChange={(e) => void handleFile(e.target.files?.[0])}
               />

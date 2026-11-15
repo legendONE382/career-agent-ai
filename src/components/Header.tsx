@@ -31,7 +31,15 @@ export function Header({ stage, backend, demo, online, canInstall, onInstall, on
   } else if (!backend) {
     pill = { text: "Connecting…", short: "…", cls: "border-ink/10 bg-white/60 text-ink/60", dot: "bg-ink/30 animate-pulse" };
   } else if (backend.kind === "none") {
-    pill = { text: "Reconnecting…", short: "…", cls: "border-amber/40 bg-amber/15 text-[#8a5a00]", dot: "bg-amber animate-pulse" };
+    const byStatus: Record<string, { text: string; cls: string }> = {
+      not_configured: { text: "AI not configured", cls: "border-amber/40 bg-amber/15 text-[#8a5a00]" },
+      invalid_key: { text: "AI key invalid", cls: "border-amber/40 bg-amber/15 text-[#8a5a00]" },
+      quota_exhausted: { text: "AI quota exhausted", cls: "border-amber/40 bg-amber/15 text-[#8a5a00]" },
+      model_unavailable: { text: "AI model unavailable", cls: "border-amber/40 bg-amber/15 text-[#8a5a00]" },
+      upstream_failure: { text: "AI service unreachable", cls: "border-amber/40 bg-amber/15 text-[#8a5a00]" },
+    };
+    const info = byStatus[(backend.status ?? "").toString()] || { text: "AI unavailable", cls: "border-amber/40 bg-amber/15 text-[#8a5a00]" };
+    pill = { text: info.text, short: "…", cls: info.cls, dot: "bg-amber animate-pulse" };
   } else {
     pill = { text: "AI online", short: "Live", cls: "border-mint/30 bg-mint/10 text-[#0e7a53]", dot: "bg-mint" };
   }
