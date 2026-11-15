@@ -10,7 +10,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { originAllowed, rateLimit } from "./_lib.ts";
+import { originAllowed, rateLimit } from "./_lib.js";
 
 type Req = IncomingMessage & { body?: unknown };
 

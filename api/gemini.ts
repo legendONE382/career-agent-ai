@@ -7,7 +7,7 @@
  * (allow-listed media types, size caps) and user-safe error messages.
  */
 import type { ServerResponse } from "node:http";
-import { originAllowed, rateLimit, readJsonBody, send, type Req } from "./_lib.ts";
+import { originAllowed, rateLimit, readJsonBody, send, type Req } from "./_lib.js";
 
 const DEFAULT_MODEL = "gemini-flash-latest";
 const UPSTREAM = "https://generativelanguage.googleapis.com/v1beta/models";
