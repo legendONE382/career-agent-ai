@@ -3,118 +3,67 @@
  *
  * The browser POSTs a Gemini `generateContent` payload here; the function adds the
  * secret GEMINI_API_KEY (never shipped to the client) and forwards it to Google.
- * Hardened with: same-origin check, per-IP rate limiting, strict payload validation
- * (allow-listed media types, size caps) and user-safe error messages.
+ *
+ * Hardened with:
+ *   - Same-origin check
+ *   - Per-IP rate limiting
+ *   - Strict payload validation (allow-listed media types, size caps)
+ *   - Bounded retries with exponential backoff
+ *   - Explicit request timeouts
+ *   - Consistent JSON error responses (never exposes the API key)
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  send,
+  readRequestBody,
+  isObj,
+  HttpError,
+  rateLimit,
+  originAllowed,
+  fetchWithTimeout,
+  mapGeminiHttpError,
+  makeGeminiError,
+  type GeminiError,
+  type GeminiErrorCode,
+} from "./core";
 
 const DEFAULT_MODEL = "gemini-flash-latest";
-const UPSTREAM = "https://generativelanguage.googleapis.com/v1beta/models";
+const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const MAX_BODY_BYTES = 4_400_000; // Vercel's request body limit is 4.5 MB
+const UPSTREAM_TIMEOUT_MS = 55_000;
+const MAX_RETRIES = 2;
 
 const ALLOWED_MIME =
   /^(video\/(webm|mp4)|image\/(png|jpeg|webp)|audio\/(webm|mp4|mpeg|wav|x-wav|ogg)|application\/pdf)$/;
 
-export type Req = IncomingMessage & { body?: unknown };
+type Part = { text: string } | { inlineData: { mimeType: string; data: string } };
 
-const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
-
-function send(res: ServerResponse, status: number, body: unknown) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
-  res.end(JSON.stringify(body));
+interface GenRequestBody {
+  contents?: unknown;
+  systemInstruction?: unknown;
+  generationConfig?: unknown;
 }
 
-/** Browsers calling from another site are rejected (basic CSRF / hot-link guard). */
-function originAllowed(req: Req): boolean {
-  const origin = req.headers.origin;
-  if (!origin) return true; // non-browser clients / same-origin GETs
-  try {
-    return new URL(origin).host === req.headers.host;
-  } catch {
-    return false;
-  }
+interface GeminiCandidate {
+  finishReason?: string;
+  content?: { parts?: { text?: string; thought?: boolean }[] };
 }
 
-function clientIp(req: Req): string {
-  const xf = req.headers["x-forwarded-for"];
-  const first = Array.isArray(xf) ? xf[0] : xf?.split(",")[0];
-  if (first) return first.trim();
-  try {
-    return (req.socket.remoteAddress || "unknown").trim();
-  } catch {
-    return "unknown";
-  }
+interface GeminiResponse {
+  promptFeedback?: { blockReason?: string };
+  candidates?: GeminiCandidate[];
 }
 
-/* Best-effort per-instance rate limit (serverless instances are ephemeral, but this
-   stops bursts from a single visitor hammering the free Gemini quota). */
-const buckets = new Map<string, { start: number; count: number }>();
+const isGeminiError = (e: unknown): e is GeminiError => e instanceof Error && (e as GeminiError).code !== undefined;
 
-function rateLimit(req: Req, res: ServerResponse, max = 40, windowMs = 10 * 60_000): boolean {
-  const ip = clientIp(req);
-  const now = Date.now();
-  let b = buckets.get(ip);
-  if (!b || now - b.start > windowMs) {
-    b = { start: now, count: 0 };
-    buckets.set(ip, b);
-  }
-  b.count++;
-  if (buckets.size > 5000) {
-    for (const [k, v] of buckets) if (now - v.start > windowMs) buckets.delete(k);
-  }
-  if (b.count > max) {
-    res.setHeader("Retry-After", "60");
-    send(res, 429, { error: "You're going a little fast — please wait a minute and try again." });
-    return false;
-  }
-  return true;
-}
-
-/** Reads a JSON body (Vercel may pre-parse it) with a hard size cap. */
-async function readJsonBody(req: Req, maxBytes: number): Promise<unknown> {
-  const existing = req.body;
-  if (existing !== undefined && existing !== null) {
-    if (typeof existing === "string") {
-      if (existing.length > maxBytes) throw new Error("too_large");
-      try {
-        return JSON.parse(existing);
-      } catch {
-        return null;
-      }
-    }
-    if (Buffer.isBuffer(existing)) {
-      if (existing.length > maxBytes) throw new Error("too_large");
-      try {
-        return JSON.parse(existing.toString("utf8"));
-      } catch {
-        return null;
-      }
-    }
-    return existing;
-  }
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-    size += buf.length;
-    if (size > maxBytes) throw new Error("too_large");
-    chunks.push(buf);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    return null;
-  }
-}
-
-/** Returns an error string, or null when the payload is acceptable. */
-function validatePayload(body: Record<string, unknown>): string | null {
-  const { contents, systemInstruction, generationConfig } = body;
+/** Validate the incoming generateContent payload shape. */
+function validatePayload(body: GenRequestBody): string | null {
+  const { contents } = body;
   if (!Array.isArray(contents) || contents.length === 0 || contents.length > 4) return "Invalid request.";
   for (const item of contents) {
-    if (!isObj(item) || !Array.isArray(item.parts) || item.parts.length === 0 || item.parts.length > 8) return "Invalid request.";
+    if (!isObj(item) || !Array.isArray(item.parts) || item.parts.length === 0 || item.parts.length > 8) {
+      return "Invalid request.";
+    }
     for (const part of item.parts) {
       if (!isObj(part)) return "Invalid request.";
       if (typeof part.text === "string") {
@@ -123,79 +72,159 @@ function validatePayload(body: Record<string, unknown>): string | null {
         const mime = String(part.inlineData.mimeType || "").split(";")[0].trim();
         const data = part.inlineData.data;
         if (!ALLOWED_MIME.test(mime)) return "Unsupported media type.";
-        if (typeof data !== "string" || data.length === 0 || data.length > 4_200_000) return "Media payload is too large.";
+        if (typeof data !== "string" || data.length === 0 || data.length > 4_200_000) {
+          return "Media payload is too large.";
+        }
       } else {
         return "Invalid request.";
       }
     }
   }
-  if (systemInstruction !== undefined && JSON.stringify(systemInstruction).length > 25_000) return "Invalid request.";
-  if (generationConfig !== undefined && (!isObj(generationConfig) || JSON.stringify(generationConfig).length > 30_000)) {
+  if (body.systemInstruction !== undefined && JSON.stringify(body.systemInstruction).length > 25_000) {
+    return "Invalid request.";
+  }
+  if (body.generationConfig !== undefined && (!isObj(body.generationConfig) || JSON.stringify(body.generationConfig).length > 30_000)) {
     return "Invalid request.";
   }
   return null;
+}
+
+function buildPayload(body: GenRequestBody): Record<string, unknown> {
+  const payload: Record<string, unknown> = { contents: body.contents };
+  if (body.systemInstruction) payload.systemInstruction = body.systemInstruction;
+  if (isObj(body.generationConfig)) {
+    const gc = { ...body.generationConfig };
+    if (typeof gc.maxOutputTokens === "number") gc.maxOutputTokens = Math.min(gc.maxOutputTokens, 32768);
+    payload.generationConfig = gc;
+  }
+  return payload;
+}
+
+function extractText(data: unknown): string {
+  const d = data as GeminiResponse;
+  if (d.promptFeedback?.blockReason) {
+    throw makeGeminiError("blocked", "Gemini's safety filter blocked this request. Try rephrasing.");
+  }
+  const cand = d.candidates?.[0];
+  const text = (cand?.content?.parts ?? [])
+    .filter((p) => typeof p.text === "string" && !p.thought)
+    .map((p) => p.text as string)
+    .join("");
+  if (!text.trim()) {
+    const reason = cand?.finishReason;
+    if (reason && reason !== "STOP" && reason !== "MAX_TOKENS") {
+      throw makeGeminiError("blocked", "Gemini couldn't produce a response for this content. Please try again.");
+    }
+    throw makeGeminiError("bad_response", "The AI returned an empty response. Please try again.");
+  }
+  return text;
+}
+
+function parseJsonText(text: string): unknown {
+  const t = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  try {
+    return JSON.parse(t);
+  } catch {
+    /* try to salvage */
+  }
+  const s = t.indexOf("{");
+  const e = t.lastIndexOf("}");
+  if (s >= 0 && e > s) {
+    try {
+      return JSON.parse(t.slice(s, e + 1));
+    } catch {
+      /* fall through */
+    }
+  }
+  throw makeGeminiError("bad_response", "The AI returned malformed data. Please try again.");
 }
 
 export default async function handler(req: Req, res: ServerResponse) {
   try {
     if (req.method !== "POST") {
       res.setHeader("Allow", "POST");
-      return send(res, 405, { error: "Method not allowed." });
+      return send(res, 405, { error: "Method not allowed.", code: "method_not_allowed" });
     }
-    if (!originAllowed(req)) return send(res, 403, { error: "Request not allowed." });
+    if (!originAllowed(req)) return send(res, 403, { error: "Request not allowed.", code: "forbidden" });
     if (!rateLimit(req, res, 40)) return;
 
     const key = (process.env.GEMINI_API_KEY || "").trim();
     if (!key) {
-      console.error("[careeragent] GEMINI_API_KEY is not configured on the server.");
-      return send(res, 503, { code: "not_configured", error: "Our AI coach is briefly unavailable. Please try again in a moment." });
+      return send(res, 503, {
+        error: "Our AI coach is briefly unavailable. Please try again in a moment.",
+        code: "not_configured",
+      });
     }
 
     let body: unknown;
     try {
-      body = await readJsonBody(req, MAX_BODY_BYTES);
-    } catch {
-      return send(res, 413, { error: "That recording is a bit too large. Keep answers under 90 seconds and try again." });
+      body = await readRequestBody(req, MAX_BODY_BYTES);
+    } catch (err) {
+      if (err instanceof HttpError) return send(res, err.status, { error: err.message, code: err.code });
+      return send(res, 400, { error: "Invalid request body.", code: "bad_request" });
     }
-    if (!isObj(body)) return send(res, 400, { error: "Invalid request." });
+    if (!isObj(body)) return send(res, 400, { error: "Invalid request.", code: "bad_request" });
 
-    const invalid = validatePayload(body);
-    if (invalid) return send(res, 400, { error: invalid });
-
-    const payload: Record<string, unknown> = { contents: body.contents };
-    if (body.systemInstruction) payload.systemInstruction = body.systemInstruction;
-    if (isObj(body.generationConfig)) {
-      const gc = { ...body.generationConfig };
-      if (typeof gc.maxOutputTokens === "number") gc.maxOutputTokens = Math.min(gc.maxOutputTokens, 32768);
-      payload.generationConfig = gc;
-    }
+    const invalid = validatePayload(body as GenRequestBody);
+    if (invalid) return send(res, 400, { error: invalid, code: "bad_request" });
 
     const model = (process.env.GEMINI_MODEL || DEFAULT_MODEL).trim();
-    const url = `${UPSTREAM}/${encodeURIComponent(model)}:generateContent`;
+    const url = `${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent`;
+    const payload = buildPayload(body as GenRequestBody);
 
-    try {
-      const upstream = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(55_000),
-      });
-      const text = await upstream.text();
-      res.statusCode = upstream.status;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.setHeader("Cache-Control", "no-store");
-      res.end(text);
-    } catch (err) {
-      const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
-      console.error("[careeragent] upstream error:", err);
-      return send(res, timedOut ? 504 : 502, {
-        error: timedOut
-          ? "That took longer than expected. Please try again."
-          : "We couldn't reach our AI service. Please try again in a moment.",
-      });
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const upstream = await fetchWithTimeout(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify(payload),
+        }, UPSTREAM_TIMEOUT_MS);
+
+        const raw = await upstream.text();
+        if (!upstream.ok) {
+          const mapped = mapGeminiHttpError(upstream.status, null, raw);
+          if (mapped.code === "quota_exhausted" || mapped.code === "upstream_failure") {
+            if (attempt < MAX_RETRIES) {
+              await new Promise((r) => setTimeout(r, (attempt + 1) * 5000));
+              continue;
+            }
+          }
+          return send(res, upstream.status, { error: mapped.message, code: mapped.code });
+        }
+
+        let data: unknown = null;
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          throw makeGeminiError("bad_response", "The AI returned an unreadable response. Please try again.", 502);
+        }
+        if (!data) throw makeGeminiError("bad_response", "The AI returned an empty response. Please try again.", 502);
+
+        const text = extractText(data);
+        return send(res, 200, { text });
+      } catch (err) {
+        if (isGeminiError(err)) {
+          lastError = err;
+          if ((err.code === "quota_exhausted" || err.code === "upstream_failure" || err.code === "timeout") && attempt < MAX_RETRIES) {
+            await new Promise((r) => setTimeout(r, (attempt + 1) * 5000));
+            continue;
+          }
+          const status = err.status ?? 500;
+          return send(res, status, { error: err.message, code: err.code });
+        }
+        // Non-GeminiError (e.g. network failure from fetch) → map to upstream_failure
+        lastError = err;
+        if (attempt < MAX_RETRIES) {
+          await new Promise((r) => setTimeout(r, (attempt + 1) * 5000));
+          continue;
+        }
+        return send(res, 502, { error: "We couldn't reach our AI service. Please try again in a moment.", code: "upstream_failure" });
+      }
     }
+
+    return send(res, 500, { error: "Unexpected server error. Please try again.", code: "internal_error" });
   } catch (err) {
-    console.error("[careeragent] unexpected error:", err);
-    return send(res, 500, { error: "Unexpected server error. Please try again." });
+    return send(res, 500, { error: "Unexpected server error. Please try again.", code: "internal_error" });
   }
 }
