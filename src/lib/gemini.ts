@@ -63,9 +63,11 @@ export function errorMessage(err: unknown): string {
 /* ───────────────────────── backend detection ───────────────────────── */
 
 export type BackendKind = "proxy" | "direct" | "none";
+export type HealthStatus = "not_configured" | "invalid_key" | "quota_exhausted" | "model_unavailable" | "operational" | "upstream_failure";
 export interface BackendInfo {
   kind: BackendKind;
   model?: string;
+  status?: HealthStatus;
 }
 
 let backendPromise: Promise<BackendInfo> | null = null;
@@ -84,8 +86,15 @@ async function doDetect(): Promise<BackendInfo> {
     clearTimeout(timer);
     const type = res.headers.get("content-type") || "";
     if (res.ok && type.includes("application/json")) {
-      const data = (await res.json()) as { configured?: boolean; model?: string };
-      if (data && data.configured) return { kind: "proxy", model: data.model };
+      const data = (await res.json()) as {
+        configured?: boolean;
+        model?: string;
+        status?: string;
+      };
+      if (data && data.status === "operational") return { kind: "proxy", model: data.model, status: "operational" };
+      if (data && data.configured) {
+        return { kind: "none", model: data.model, status: data.status as HealthStatus };
+      }
     }
   } catch {
     /* no serverless runtime reachable (e.g. static preview) */
@@ -111,7 +120,6 @@ interface GenRequest {
 }
 
 // Remembered across calls: flipped off if the chosen model rejects the option.
-let useThinkingConfig = true;
 let useResponseSchema = true;
 
 function buildPayload(req: GenRequest): Record<string, unknown> {
@@ -122,7 +130,6 @@ function buildPayload(req: GenRequest): Record<string, unknown> {
     if (useResponseSchema) generationConfig.responseSchema = req.schema;
     else parts.push({ text: `Respond ONLY with valid JSON matching this schema:\n${JSON.stringify(req.schema)}` });
   }
-  if (useThinkingConfig) generationConfig.thinkingConfig = { thinkingLevel: "low" };
   return {
     ...(req.system ? { systemInstruction: { parts: [{ text: req.system }] } } : {}),
     contents: [{ role: "user", parts }],
@@ -257,10 +264,6 @@ async function generate(req: GenRequest): Promise<string> {
       if (!(e instanceof AIError)) throw e;
       // Model doesn't support an optional feature → drop it once and retry immediately.
       if (e.code === "api" && e.status === 400) {
-        if (useThinkingConfig && /think/i.test(e.message)) {
-          useThinkingConfig = false;
-          continue;
-        }
         if (useResponseSchema && req.schema && /schema|responseMimeType|response_mime|response_schema/i.test(e.message)) {
           useResponseSchema = false;
           continue;
