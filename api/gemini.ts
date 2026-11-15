@@ -5,6 +5,8 @@
  * secret GEMINI_API_KEY (never shipped to the client) and forwards it to Google.
  * Hardened with: same-origin check, per-IP rate limiting, strict payload validation
  * (allow-listed media types, size caps) and user-safe error messages.
+ *
+ * Redeploy marker: 2026-11-15T18:15Z
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 
