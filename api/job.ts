@@ -10,9 +10,54 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { originAllowed, rateLimit } from "./_lib.ts";
 
 type Req = IncomingMessage & { body?: unknown };
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/** Browsers calling from another site are rejected (basic CSRF / hot-link guard). */
+function originAllowed(req: Req): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
+}
+
+function clientIp(req: Req): string {
+  const xf = req.headers["x-forwarded-for"];
+  const first = Array.isArray(xf) ? xf[0] : xf?.split(",")[0];
+  if (first) return first.trim();
+  try {
+    return (req.socket.remoteAddress || "unknown").trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+const buckets = new Map<string, { start: number; count: number }>();
+
+function rateLimit(req: Req, res: ServerResponse, max = 20, windowMs = 10 * 60_000): boolean {
+  const ip = clientIp(req);
+  const now = Date.now();
+  let b = buckets.get(ip);
+  if (!b || now - b.start > windowMs) {
+    b = { start: now, count: 0 };
+    buckets.set(ip, b);
+  }
+  b.count++;
+  if (buckets.size > 5000) {
+    for (const [k, v] of buckets) if (now - v.start > windowMs) buckets.delete(k);
+  }
+  if (b.count > max) {
+    res.setHeader("Retry-After", "60");
+    send(res, 429, { error: "You're going a little fast — please wait a minute and try again." });
+    return false;
+  }
+  return true;
+}
 
 const MAX_BYTES = 1_500_000;
 const MAX_CHARS = 18_000;
@@ -323,13 +368,13 @@ function extract(html: string): { title: string; company: string; text: string }
 }
 
 export default async function handler(req: Req, res: ServerResponse) {
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
-    return send(res, 405, { error: "Method not allowed" });
-  }
-  if (!originAllowed(req)) return send(res, 403, { error: "Request not allowed." });
-  if (!rateLimit(req, res, 20)) return;
   try {
+    if (req.method !== "POST") {
+      res.setHeader("Allow", "POST");
+      return send(res, 405, { error: "Method not allowed" });
+    }
+    if (!originAllowed(req)) return send(res, 403, { error: "Request not allowed." });
+    if (!rateLimit(req, res, 20)) return;
     const body = await readJson(req);
     const url = typeof body?.url === "string" ? body.url.trim() : "";
     if (!url) throw new HttpError(400, "Please provide a job link.");
@@ -344,6 +389,7 @@ export default async function handler(req: Req, res: ServerResponse) {
     return send(res, 200, { title, company, text: text.slice(0, MAX_CHARS) });
   } catch (err) {
     if (err instanceof HttpError) return send(res, err.status, { error: err.message });
+    console.error("[careeragent] job import error:", err);
     return send(res, 500, { error: "Something went wrong while reading that page." });
   }
 }
