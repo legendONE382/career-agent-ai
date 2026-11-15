@@ -10,7 +10,6 @@ import type { AnswerAnalysis, Question, SessionSummary, TailorResult } from "../
 import {
   ANALYZE_SCHEMA,
   ANALYZE_SYSTEM,
-  PDF_EXTRACT_PROMPT,
   QUESTIONS_SCHEMA,
   QUESTIONS_SYSTEM,
   SUMMARY_SCHEMA,
@@ -339,17 +338,31 @@ export async function importJob(url: string): Promise<{ title: string; company: 
   return { title: data.title || "", company: data.company || "", text: data.text };
 }
 
-export async function extractResumeFromPdf(file: Blob): Promise<string> {
+export async function extractResumeFromPdf(file: File): Promise<string> {
   if (demoMode) {
     await sleep(700);
     return "(Sample preview) PDF reading is available in live sessions. For now, paste your resume text below.";
   }
   const data = await blobToBase64(file);
-  const text = await generate({
-    parts: [{ inlineData: { mimeType: "application/pdf", data } }, { text: PDF_EXTRACT_PROMPT }],
-    maxOutputTokens: 8192,
-  });
-  return text.replace(/^```(?:\w+)?\s*/i, "").replace(/```\s*$/, "").trim();
+  let res: Response;
+  try {
+    res = await fetch("/api/resume/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, data, mimeType: file.type || "application/pdf" }),
+    });
+  } catch {
+    throw new AIError("network", "Network error while extracting the PDF. Please try again.");
+  }
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new AIError("api", errData?.error || "PDF extraction failed. Please try again or paste your resume text.", res.status);
+  }
+  const result = await res.json().catch(() => null);
+  if (!result || !result.text) {
+    throw new AIError("api", "PDF extraction returned no text. Please try again or paste your resume text.");
+  }
+  return result.text;
 }
 
 export async function tailorResume(job: string, resume: string): Promise<TailorResult> {
